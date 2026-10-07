@@ -5,15 +5,11 @@ services:
     rootDir: backend
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/ready
-    disk:
-      name: office-agent-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - key: DATABASE_URL
-        value: sqlite:////data/office_agent.db
+        value: sqlite:///./office_agent.db
       - key: USE_FAKE_MODEL
-        value: "false"
+        value: "true"
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: MODEL_NAME
@@ -30,7 +26,7 @@ services:
     runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
-    staticPublishPath: frontend/dist
+    staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
         value: https://office-agent-api.onrender.com/api

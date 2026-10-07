@@ -151,9 +151,9 @@ git remote add origin https://github.com/<你的账号>/<你的仓库>.git
 git push -u origin main
 ```
 
-然后在 Render 控制台选择 **New → Blueprint**，连接这个 GitHub 仓库并应用 `render.yaml`。创建 API 服务时，在 Render 的 Secret 中填写 `DEEPSEEK_API_KEY`；不要把它写进 GitHub、`render.yaml` 或工作流文件。部署完成后先检查 `https://office-agent-api.onrender.com/api/ready`，再打开前端站点。
+然后在 Render 控制台选择 **New → Blueprint**，连接这个 GitHub 仓库并应用 `render.yaml`。Blueprint 默认先使用 `USE_FAKE_MODEL=true`，不填写模型 Key 也能完成首次部署和链路验证。部署完成后先检查 `https://office-agent-api.onrender.com/api/ready`，再打开前端站点；确认正常后，在 API 服务环境变量中填写 `DEEPSEEK_API_KEY`，将 `USE_FAKE_MODEL` 改为 `false`，再手动 Deploy。不要把密钥写进 GitHub、`render.yaml` 或工作流文件。
 
-Render 的 SQLite 持久磁盘适合个人演示和小规模使用；正式多人生产环境建议把 `DATABASE_URL` 换成 PostgreSQL，并配置定期备份、登录鉴权和限流。
+当前 Blueprint 为兼容免费方案使用本地 SQLite 临时文件；Render 免费服务重启或重新部署时文件可能丢失。正式使用请把 `DATABASE_URL` 换成 Render Postgres，或升级 API 服务后再添加持久磁盘，并配置定期备份、登录鉴权和限流。
 
 ## 数据与安全说明
 
