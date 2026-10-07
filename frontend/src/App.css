@@ -1,0 +1,149 @@
+:root {
+  color: #26332e;
+  background: #eef1ed;
+  font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
+  font-synthesis: none;
+}
+* { box-sizing: border-box; }
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+
+.app-shell {
+  height: 100%;
+  min-height: 0;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+header {
+  flex: 0 0 auto;
+  max-width: 1600px;
+  width: 100%;
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+}
+h1 { font-family: Georgia, serif; font-size: 28px; font-weight: 500; margin: 3px 0 0; }
+h2 { margin: 4px 0 12px; font-size: 18px; }
+h3 { margin: 0 0 12px; font-size: 15px; letter-spacing: .02em; }
+.eyebrow { color: #758078; font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+.header-status { color: #627068; font-size: 13px; padding-bottom: 4px; }
+.status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #4f9567; margin-right: 6px; }
+.notice {
+  flex: 0 0 auto;
+  max-width: 1600px;
+  width: 100%;
+  margin: 0 auto 10px;
+  padding: 8px 12px;
+  background: #fff9df;
+  border: 1px solid #ece0ad;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: 1600px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  background: #fafbf8;
+  border: 1px solid #d9ddd7;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 18px 50px rgba(43, 55, 47, .08);
+}
+.sidebar, .chat, .content {
+  min-height: 0;
+  min-width: 0;
+}
+.sidebar {
+  flex: 0 0 240px;
+  padding: 20px 16px;
+  background: #f4f6f2;
+  border-right: 1px solid #dfe3dc;
+  overflow: auto;
+}
+.chat {
+  flex: 0 0 340px;
+  width: 340px;
+  padding: 16px;
+  background: #f4f6f2;
+  border-left: 1px solid #dfe3dc;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.content {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  overflow: hidden;
+}
+.new-meeting { display: grid; gap: 8px; padding-bottom: 18px; border-bottom: 1px solid #dfe3dc; }
+input, textarea {
+  width: 100%; border: 1px solid #d5dad3; border-radius: 7px; padding: 9px;
+  color: #26332e; background: #fff; resize: vertical;
+}
+.new-meeting textarea { min-height: 76px; }
+button, .file-button {
+  border: 1px solid #bac5bd; border-radius: 7px; padding: 9px 12px; color: #34453b;
+  background: #fff; font-weight: 600; font-size: 12px; text-align: center;
+}
+button:hover, .file-button:hover { border-color: #658072; background: #f9fbf8; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+.new-meeting > button, .content-head > button, .chat form button, .weekly-select button, .task-toolbar button {
+  color: #fff; border-color: #334d40; background: #334d40;
+}
+.file-button input { display: none; }
+.meeting-list { display: grid; gap: 6px; padding-top: 14px; }
+.meeting { text-align: left; display: grid; gap: 5px; border-color: transparent; background: transparent; }
+.meeting.active { background: #e2e9e2; border-color: #ccd7cc; }
+.meeting strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meeting small, .task small { display: block; color: #7a857e; font-size: 11px; font-weight: 400; }
+.content-head { flex: 0 0 auto; padding: 16px 24px 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.content-head h2 { margin-bottom: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabs { flex: 0 0 auto; display: flex; padding: 0 24px; border-bottom: 1px solid #e4e7e2; }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 12px 14px; background: transparent; color: #778078; }
+.tabs button.active { color: #2e4639; border-bottom-color: #3c6650; }
+.document { flex: 1 1 auto; min-height: 0; padding: 20px 24px 32px; overflow-y: auto; overflow-x: hidden; }
+.document article { padding: 16px 0; border-bottom: 1px solid #e9ece7; line-height: 1.65; font-size: 14px; }
+.document article p { margin: 7px 0; }
+.draft-line { display: flex; justify-content: space-between; color: #778078; font-size: 11px; }
+.draft-line span:first-child { color: #876f27; background: #f8efd2; padding: 3px 7px; border-radius: 10px; }
+.task-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.task-toolbar h3 { margin: 0; }
+.task { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start; padding: 12px 0; }
+.task.done b { text-decoration: line-through; color: #7a857e; }
+.task input[type="checkbox"] { width: 16px; height: 16px; margin-top: 4px; accent-color: #334d40; }
+.ref { color: #507563; background: #edf4ee; border-radius: 10px; padding: 2px 7px; font-size: 10px; white-space: nowrap; }
+.muted, .empty { color: #8a938d; font-size: 13px; }
+.source { margin: 0; white-space: pre-wrap; font: 13px/1.75 ui-monospace, Consolas, monospace; color: #445048; }
+.empty-state { min-height: 240px; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; color: #89918c; }
+.empty-state b { color: #4c5b52; font-family: Georgia, serif; font-size: 22px; font-weight: 500; }
+.weekly-select { display: grid; gap: 10px; }
+.weekly-select label { font-size: 13px; }
+.weekly-select input { width: auto; margin-right: 8px; }
+.chat-lead { margin: 0 0 10px; color: #66756c; font-size: 12px; line-height: 1.55; }
+.chat-log { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 12px; }
+.bubble { max-width: 100%; padding: 9px 11px; border-radius: 10px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
+.bubble.user { align-self: flex-end; color: #fff; background: #334d40; }
+.bubble.assistant { align-self: flex-start; background: #e7eee8; }
+.chat form { flex: 0 0 auto; display: grid; gap: 8px; }
+.chat form textarea { min-height: 88px; resize: none; }
+
+@media (max-width: 980px) {
+  .app-shell { padding: 8px; }
+  .workspace { flex-direction: column; }
+  .sidebar { flex: 0 0 auto; max-height: 28%; border-right: 0; border-bottom: 1px solid #dfe3dc; }
+  .content { flex: 1 1 auto; }
+  .chat {
+    flex: 0 0 260px;
+    width: 100%;
+    border-left: 0;
+    border-top: 1px solid #dfe3dc;
+  }
+}

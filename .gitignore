@@ -1,0 +1,13 @@
+.env
+.secrets/
+*.db
+*.sqlite3
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venv/
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+.idea/
+.vscode/

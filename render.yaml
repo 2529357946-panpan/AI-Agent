@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: office-agent-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/ready
+    disk:
+      name: office-agent-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:////data/office_agent.db
+      - key: USE_FAKE_MODEL
+        value: "false"
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: MODEL_NAME
+        value: deepseek-chat
+      - key: BASE_URL
+        value: https://api.deepseek.com
+      - key: MODEL_TIMEOUT_SECONDS
+        value: "45"
+      - key: CORS_ORIGINS
+        value: https://office-agent-web.onrender.com
+
+  - type: web
+    name: office-agent-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://office-agent-api.onrender.com/api
