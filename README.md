@@ -155,6 +155,8 @@ git push -u origin main
 
 当前 Blueprint 为兼容免费方案使用本地 SQLite 临时文件；Render 免费服务重启或重新部署时文件可能丢失。正式使用请把 `DATABASE_URL` 换成 Render Postgres，或升级 API 服务后再添加持久磁盘，并配置定期备份、登录鉴权和限流。
 
+当前 Docker 启动使用单个 Uvicorn worker，这是 SQLite 初始化的安全配置；切换 PostgreSQL 并加入迁移后再增加 worker 或实例数。
+
 ## 数据与安全说明
 
 - API Key 只从后端环境变量读取，健康检查不会返回 Key。
