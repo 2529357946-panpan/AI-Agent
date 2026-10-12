@@ -1,4 +1,5 @@
 from app.cache import InMemoryCacheClient
+from app.db import normalize_database_url
 from app.local_model import FakeEmbeddingClient, FakeLocalModelClient
 from app.model_client import CachedModelClient, FakeModelClient, ModelError, ModelValidationError
 from app.retrieval import (
@@ -10,6 +11,12 @@ from app.retrieval import (
 )
 from app.schemas import KnowledgeQuery, MinutesResult
 from app.workflow import MeetingMinutesWorkflow, MeetingWorkflowState
+
+
+def test_normalize_provider_postgres_urls_for_psycopg_v3():
+    assert normalize_database_url("postgres://user:pass@db/name") == "postgresql+psycopg://user:pass@db/name"
+    assert normalize_database_url("postgresql://user:pass@db/name") == "postgresql+psycopg://user:pass@db/name"
+    assert normalize_database_url("sqlite:///office_agent.db") == "sqlite:///office_agent.db"
 
 
 def minutes(ref: str) -> MinutesResult:

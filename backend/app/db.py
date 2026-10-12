@@ -134,10 +134,20 @@ class WeeklySelection(Base): #基于哪些列选择生成周报
     period_end: Mapped[date] = mapped_column(Date)
 
 
-is_sqlite = settings.database_url.startswith("sqlite") #检查当前是不是SQLite
+def normalize_database_url(url: str) -> str:
+    """Use the installed psycopg v3 driver for provider-style Postgres URLs."""
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url.removeprefix("postgres://")
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url.removeprefix("postgresql://")
+    return url
+
+
+database_url = normalize_database_url(settings.database_url)
+is_sqlite = database_url.startswith("sqlite") #检查当前是不是SQLite
 connect_args = {"check_same_thread": False, "timeout": 15} if is_sqlite else {}
 #存储一些连接配置；允许FastAPI在处理请求时跨线程工作
-engine = create_engine(settings.database_url, connect_args=connect_args, pool_pre_ping=True)
+engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
 #连接管理总入口，后面检查连接是否还活着
 
 if is_sqlite:
