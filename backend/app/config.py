@@ -25,9 +25,26 @@ class Settings(BaseSettings):
     model_name: str = "deepseek-chat"
     base_url: str = "https://api.deepseek.com"
     model_timeout_seconds: float = 45
-    use_fake_model: bool = True
+    use_fake_model: bool = False
     max_file_bytes: int = 10 * 1024 * 1024
+    max_audio_bytes: int = 25 * 1024 * 1024
     max_text_chars: int = 50_000
+    use_fake_transcription: bool = False
+    stt_api_key: str = ""
+    stt_base_url: str = ""
+    stt_model: str = ""
+    stt_timeout_seconds: float = 60
+    ollama_enabled: bool = False
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = ""
+    ollama_embed_model: str = ""
+    supabase_enabled: bool = False
+    supabase_url: str = ""
+    supabase_key: str = ""
+    rag_enabled: bool = True
+    rag_top_k: int = 5
+    rrf_k: int = 60
+    cache_ttl_seconds: int = 86_400
 
     #cross-origin resource sharing,跨源资源共享，允许这两个origin向后端请求信息
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

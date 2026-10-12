@@ -1,6 +1,8 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: sqlite:////data/office_agent.db
@@ -11,6 +13,22 @@ services:
       MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-45}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      USE_FAKE_TRANSCRIPTION: ${USE_FAKE_TRANSCRIPTION:-true}
+      STT_API_KEY: ${STT_API_KEY:-}
+      STT_BASE_URL: ${STT_BASE_URL:-}
+      STT_MODEL: ${STT_MODEL:-}
+      STT_TIMEOUT_SECONDS: ${STT_TIMEOUT_SECONDS:-60}
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-false}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-}
+      RAG_ENABLED: ${RAG_ENABLED:-true}
+      RAG_TOP_K: ${RAG_TOP_K:-5}
+      RRF_K: ${RRF_K:-60}
+      SUPABASE_ENABLED: ${SUPABASE_ENABLED:-false}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_KEY: ${SUPABASE_KEY:-}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-86400}
     volumes:
       - office-agent-data:/data
     healthcheck:

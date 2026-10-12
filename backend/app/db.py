@@ -48,6 +48,21 @@ class Meeting(Base):
     versions: Mapped[list["ResultVersion"]] = relationship(
         cascade="all, delete-orphan", order_by="ResultVersion.created_at"
     )
+    context: Mapped["MeetingContext | None"] = relationship(
+        cascade="all, delete-orphan", uselist=False, back_populates="meeting"
+    )
+
+
+class MeetingContext(Base):
+    __tablename__ = "meeting_contexts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    meeting_id: Mapped[str] = mapped_column(
+        ForeignKey("meetings.id"), unique=True, index=True
+    )
+    branch_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    department: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    meeting_type: Mapped[str] = mapped_column(String(40), default="generic")
+    meeting: Mapped["Meeting"] = relationship(back_populates="context")
 
 
 class SourceChunk(Base): #会议原文切片

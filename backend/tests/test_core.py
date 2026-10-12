@@ -4,6 +4,9 @@ from pathlib import Path
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_office_agent.db"
 os.environ["USE_FAKE_MODEL"] = "true"
+os.environ["USE_FAKE_TRANSCRIPTION"] = "true"
+os.environ["OLLAMA_ENABLED"] = "false"
+os.environ["SUPABASE_ENABLED"] = "false"
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +18,7 @@ from app.model_client import DeepSeekModelClient, ModelError
 from app.schemas import MinutesResult, ReferencedText
 from app.services import apply_revision
 from app.services import validate_refs
+from app.transcription import TranscriptionError
 
 
 def setup_module():
@@ -213,7 +217,7 @@ def test_invalid_inputs_have_consistent_errors_and_no_new_version():
 
 def test_model_failure_does_not_create_partial_version(monkeypatch):
     class FailingModel:
-        def generate_minutes(self, _chunks):
+        def generate_minutes(self, _chunks, *_args, **_kwargs):
             raise ModelError("模拟上游超时")
 
     with TestClient(app) as client:
@@ -274,3 +278,117 @@ def test_deepseek_non_json_response_is_repaired_once(monkeypatch):
     monkeypatch.setattr(model_client_module.httpx, "post", lambda *args, **kwargs: FakeResponse())
     assert DeepSeekModelClient()._complete_json("测试") == '{"ok": true}'
     assert call_count == 2
+
+
+def test_audio_transcript_creates_meeting_chunks_and_minutes():
+    transcript = "会议决定发布新版。请完成上线检查，负责人和日期待确认。"
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/meetings/audio",
+            files={"file": ("meeting.wav", transcript.encode("utf-8"), "audio/wav")},
+            data={"title": "音频周会"},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["source_type"] == "audio"
+        assert body["raw_text"] == transcript
+        assert body["source_chunks"]
+        assert body["current_result"]["action_items"]
+        assert body["current_result"]["review_status"] == "pending"
+        assert body["transcription_mode"] == "fake"
+
+
+def test_transcription_failure_is_atomic(monkeypatch):
+    class FailingTranscription:
+        def transcribe(self, *_args, **_kwargs):
+            raise TranscriptionError("模拟转写失败")
+
+    with TestClient(app) as client:
+        before = len(client.get("/api/meetings").json())
+        monkeypatch.setattr(
+            main_module, "get_transcription_client", lambda: FailingTranscription()
+        )
+        response = client.post(
+            "/api/meetings/audio",
+            files={"file": ("meeting.wav", b"audio", "audio/wav")},
+        )
+        assert response.status_code == 502
+        assert len(client.get("/api/meetings").json()) == before
+
+
+def test_audio_model_failure_rolls_back_meeting_and_version(monkeypatch):
+    class FailingModel:
+        def generate_minutes(self, _chunks, *_args, **_kwargs):
+            raise ModelError("模拟模型失败")
+
+    with TestClient(app) as client:
+        before = len(client.get("/api/meetings").json())
+        monkeypatch.setattr(main_module, "get_model_client", lambda: FailingModel())
+        response = client.post(
+            "/api/meetings/audio",
+            files={
+                "file": (
+                    "meeting.wav",
+                    "会议决定继续测试。".encode("utf-8"),
+                    "audio/wav",
+                )
+            },
+        )
+        assert response.status_code == 502
+        assert len(client.get("/api/meetings").json()) == before
+
+
+def test_human_review_creates_confirmed_version_and_preserves_model_version():
+    with TestClient(app) as client:
+        data = _create_and_generate(client, "人工确认")
+        generated_versions = client.get(
+            f"/api/meetings/{data['meeting_id']}/versions"
+        ).json()
+        item_id = generated_versions[0]["payload"]["action_items"][0]["id"]
+        reviewed = client.post(
+            f"/api/meetings/{data['meeting_id']}/review",
+            json={
+                "confirm": True,
+                "patches": [
+                    {"item_id": item_id, "field": "owner", "value": "小王"},
+                    {"item_id": item_id, "field": "due_date", "value": "2026-10-20"},
+                    {"item_id": item_id, "field": "status", "value": "todo"},
+                ],
+            },
+        )
+        assert reviewed.status_code == 200
+        assert reviewed.json()["result"]["review_status"] == "confirmed"
+        versions = client.get(f"/api/meetings/{data['meeting_id']}/versions").json()
+        assert len(versions) == 2
+        assert versions[0]["payload"]["review_status"] == "confirmed"
+        assert versions[1]["payload"].get("review_status", "pending") == "pending"
+
+
+def test_incomplete_human_review_does_not_create_version():
+    with TestClient(app) as client:
+        data = _create_and_generate(client, "未完成确认")
+        before = client.get(f"/api/meetings/{data['meeting_id']}/versions").json()
+        response = client.post(
+            f"/api/meetings/{data['meeting_id']}/review",
+            json={"confirm": True, "patches": []},
+        )
+        after = client.get(f"/api/meetings/{data['meeting_id']}/versions").json()
+        assert response.status_code == 400
+        assert len(after) == len(before)
+
+
+def test_action_item_lifecycle_and_overview():
+    with TestClient(app) as client:
+        data = _create_and_generate(client, "生命周期")
+        meeting = client.get(f"/api/meetings/{data['meeting_id']}").json()
+        item_id = meeting["current_result"]["action_items"][0]["id"]
+        for expected_version, status in enumerate(("todo", "in_progress", "done"), start=2):
+            response = client.post(
+                f"/api/meetings/{data['meeting_id']}/action-items/{item_id}/status",
+                json={"status": status},
+            )
+            assert response.status_code == 200
+            assert response.json()["version_no"] == expected_version
+            assert response.json()["result"]["action_items"][0]["status"] == status
+        overview = client.get("/api/action-items/overview").json()
+        assert any(item["meeting_id"] == data["meeting_id"] for item in overview["done"])

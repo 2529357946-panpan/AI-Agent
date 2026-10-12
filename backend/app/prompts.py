@@ -14,6 +14,23 @@ open_questions, source_refs。action id 按 a1、a2 顺序生成。仅“明确�
 {chunks}
 """
 
+MEETING_TYPE_GUIDANCE = {
+    "teaching_research": "重点提取教学反馈、教学问题、明确决议、下阶段教学计划、资料准备及其负责人和截止日期。",
+    "academic_operations": "重点提取排课调课、补课、教师协调、家长沟通和跨校区协调事项及其负责人和截止日期。",
+    "branch_management": "重点提取已完成事项、进行中事项、风险、待确认事项、跨校区协调问题和下阶段计划。",
+    "generic": "按通用会议结构提取明确决议、待办和待确认问题。",
+}
+
+KNOWLEDGE_PROMPT = """只根据下列历史会议或演示 SOP 回答问题。不得编造来源中没有的信息。
+输出 JSON：{{"answer":"...","knowledge_refs":["source-id"]}}。
+knowledge_refs 只能使用给定来源 ID。
+
+问题：{query}
+
+来源：
+{sources}
+"""
+
 CHAT_PROMPT = """用户可能在提问，也可能要求修改当前纪要草稿。只依据材料和当前草稿，不要编造。
 输出 JSON：intent(revision|question|clarify)、answer、patches、source_refs。
 修订时 patches 为 [{{item_id 或 item_index, field, value}}]，field 仅限 owner/due_date/status/task。

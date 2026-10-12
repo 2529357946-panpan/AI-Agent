@@ -1,8 +1,10 @@
+#Web/API应用入口+业务编排层，HTTP路由表，前端发什么就进入什么函数
 import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -13,9 +15,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as DbSession, selectinload
 
-from .config import settings
-from .db import (
+from .config import settings #配置层
+from .db import ( #数据库模型+连接
     Meeting,
+    MeetingContext,
     Message,
     ResultVersion,
     Session,
@@ -24,22 +27,27 @@ from .db import (
     get_db,
     init_db,
 )
-from .model_client import ModelError, get_model_client
-from .schemas import (
+from .model_client import ModelError, get_model_client #模型调用
+from .schemas import ( #数据格式
     ActionToggleRequest,
+    ActionStatusRequest,
     FieldPatch,
     GenerateRequest,
+    KnowledgeQuery,
     MeetingCreate,
     MessageRequest,
+    ReviewRequest,
     WeeklyRequest,
 )
-from .services import (
+from .services import ( #业务规则
     AmbiguousInstruction,
     InvalidDateError,
     apply_patches,
     apply_revision,
+    action_item_overview,
     build_chunks,
     draft_weekly,
+    confirm_review,
     latest_version,
     looks_like_question,
     parse_document,
@@ -47,6 +55,10 @@ from .services import (
     validate_refs,
     validate_text,
 )
+from .retrieval import RetrievalError, get_retrieval_service
+from .transcription import TranscriptionError, get_transcription_client
+from .workflow import MeetingMinutesWorkflow
+#1.应用启动与基础设施
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger("office-agent")
@@ -67,7 +79,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+#2.所有请求的公共处理
 @app.middleware("http")
 async def request_context(request: Request, call_next):
     request_id = str(uuid.uuid4())
@@ -121,7 +133,7 @@ async def unknown_error(request: Request, exc: Exception):
         },
     )
 
-
+#3.公共辅助函数
 def meeting_response(meeting: Meeting, session_id: str | None = None) -> dict:
     versions = [item for item in meeting.versions if item.kind == "minutes"]
     versions = sorted(versions, key=lambda item: item.version_no)
@@ -139,6 +151,11 @@ def meeting_response(meeting: Meeting, session_id: str | None = None) -> dict:
             }
             for item in session.messages
         ]
+    latest_payload = None
+    if latest:
+        from .schemas import MinutesResult
+
+        latest_payload = MinutesResult.model_validate(latest.payload).model_dump(mode="json")
     return {
         "id": meeting.id,
         "meeting_id": meeting.id,
@@ -149,6 +166,9 @@ def meeting_response(meeting: Meeting, session_id: str | None = None) -> dict:
         "source_type": meeting.source_type,
         "raw_text": meeting.raw_text,
         "status": meeting.status,
+        "branch_name": meeting.context.branch_name if meeting.context else None,
+        "department": meeting.context.department if meeting.context else None,
+        "meeting_type": meeting.context.meeting_type if meeting.context else "generic",
         "messages": messages,
         "source_chunks": [
             {
@@ -160,10 +180,38 @@ def meeting_response(meeting: Meeting, session_id: str | None = None) -> dict:
             }
             for chunk in meeting.chunks
         ],
-        "current_result": latest.payload if latest else None,
+        "current_result": latest_payload,
         "version_no": latest.version_no if latest else None,
+        "needs_human_review": bool(latest_payload and latest_payload["review_status"] != "confirmed"),
         "model_mode": "fake" if settings.use_fake_model else "deepseek",
     }
+
+
+def create_meeting_record(
+    db: DbSession,
+    text: str,
+    title: str | None,
+    meeting_date,
+    source_type: str,
+    branch_name: str | None = None,
+    department: str | None = None,
+    meeting_type: str = "generic",
+) -> tuple[Meeting, Session]:
+    meeting = Meeting(
+        title=title or f"会议 {meeting_date or '未命名'}",
+        meeting_date=meeting_date,
+        source_type=source_type,
+        raw_text=validate_text(text),
+    )
+    meeting.chunks = build_chunks(meeting.raw_text)
+    meeting.context = MeetingContext(
+        branch_name=branch_name, department=department, meeting_type=meeting_type
+    )
+    session = Session(meeting_id=meeting.id)
+    meeting.sessions.append(session)
+    db.add(meeting)
+    db.flush()
+    return meeting, session
 
 
 def create_meeting(
@@ -172,28 +220,25 @@ def create_meeting(
     title: str | None,
     meeting_date,
     source_type: str,
+    branch_name: str | None = None,
+    department: str | None = None,
+    meeting_type: str = "generic",
 ) -> dict:
-    meeting = Meeting(
-        title=title or f"会议 {meeting_date or '未命名'}",
-        meeting_date=meeting_date,
-        source_type=source_type,
-        raw_text=validate_text(text),
+    meeting, session = create_meeting_record(
+        db, text, title, meeting_date, source_type, branch_name, department, meeting_type
     )
-    meeting.chunks = build_chunks(meeting.raw_text)
-    session = Session(meeting_id=meeting.id)
-    meeting.sessions.append(session)
-    db.add(meeting)
     db.commit()
     db.refresh(meeting)
     return meeting_response(meeting, session.id)
 
-
+#4.系统状态API
 @app.get("/api/health")
 def health():
     return {
         "status": "ok",
         "model_mode": "fake" if settings.use_fake_model else "deepseek",
         "model_configured": bool(settings.deepseek_api_key) if not settings.use_fake_model else True,
+        "transcription_mode": "fake" if settings.use_fake_transcription else "remote",
     }
 
 
@@ -206,13 +251,19 @@ def readiness():
         raise HTTPException(status_code=503, detail="数据库连接不可用") from exc
     if not settings.use_fake_model and not settings.deepseek_api_key:
         raise HTTPException(status_code=503, detail="真实模型模式尚未配置 DEEPSEEK_API_KEY")
+    if not settings.use_fake_transcription and not all(
+        (settings.stt_api_key, settings.stt_base_url, settings.stt_model)
+    ):
+        raise HTTPException(status_code=503, detail="真实转写模式尚未完整配置")
     return {"status": "ready", "database": "ok", "model_configured": True}
 
-
+#5.会议CRUD、生成纪要
 @app.post("/api/meetings", status_code=201)
 def post_meeting(payload: MeetingCreate, db: DbSession = Depends(get_db)):
     return create_meeting(
-        db, payload.text, payload.title, payload.meeting_date, source_type="text"
+        db, payload.text, payload.title, payload.meeting_date, source_type="text",
+        branch_name=payload.branch_name, department=payload.department,
+        meeting_type=payload.meeting_type,
     )
 
 
@@ -221,6 +272,9 @@ async def upload_meeting(
     file: UploadFile = File(...),
     title: str | None = Form(None),
     meeting_date: str | None = Form(None),
+    branch_name: str | None = Form(None),
+    department: str | None = Form(None),
+    meeting_type: str = Form("generic"),
     db: DbSession = Depends(get_db),
 ):
     try:
@@ -229,11 +283,60 @@ async def upload_meeting(
         text, source_type = parse_document(file.filename or "", data)
         parsed_date = None
         if meeting_date:
-            from datetime import date
-
             parsed_date = date.fromisoformat(meeting_date)
-        return create_meeting(db, text, title, parsed_date, source_type)
+        return create_meeting(db, text, title, parsed_date, source_type, branch_name, department, meeting_type)
     except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/meetings/audio", status_code=201)
+async def upload_audio(
+    file: UploadFile = File(...),
+    title: str | None = Form(None),
+    meeting_date: str | None = Form(None),
+    branch_name: str | None = Form(None),
+    department: str | None = Form(None),
+    meeting_type: str = Form("generic"),
+    db: DbSession = Depends(get_db),
+):
+    try:
+        data = await file.read(settings.max_audio_bytes + 1)
+        transcript = get_transcription_client().transcribe(
+            file.filename or "", data, file.content_type
+        )
+        parsed_date = date.fromisoformat(meeting_date) if meeting_date else None
+        meeting, session = create_meeting_record(
+            db,
+            transcript.text,
+            title or f"音频会议 {parsed_date or '未命名'}",
+            parsed_date,
+            "audio",
+            branch_name,
+            department,
+            meeting_type,
+        )
+        state, version = MeetingMinutesWorkflow(get_model_client()).run(meeting, db)
+        db.commit()
+        meeting = load_meeting(db, meeting.id)
+        response = meeting_response(meeting, session.id)
+        response.update(
+            {
+                "transcription_mode": transcript.mode,
+                "result_version_id": version.id,
+                "needs_human_review": state.needs_human_review,
+            }
+        )
+        return response
+    except TranscriptionError as exc:
+        db.rollback()
+        logger.exception("transcription_error filename=%s: %s", file.filename, exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ModelError as exc:
+        db.rollback()
+        logger.exception("model_error after transcription filename=%s: %s", file.filename, exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -247,16 +350,20 @@ def list_meetings(db: DbSession = Depends(get_db)):
             "meeting_date": str(item.meeting_date) if item.meeting_date else None,
             "created_at": item.created_at.isoformat(),
             "status": item.status,
+            "branch_name": item.context.branch_name if item.context else None,
+            "department": item.context.department if item.context else None,
+            "meeting_type": item.context.meeting_type if item.context else "generic",
         }
         for item in meetings
     ]
 
-
+#这也是公共辅助函数之一
 def load_meeting(db: DbSession, meeting_id: str) -> Meeting:
     meeting = db.scalar(
         select(Meeting)
         .options(
             selectinload(Meeting.chunks),
+            selectinload(Meeting.context),
             selectinload(Meeting.sessions).selectinload(Session.messages),
             selectinload(Meeting.versions),
         )
@@ -266,7 +373,7 @@ def load_meeting(db: DbSession, meeting_id: str) -> Meeting:
         raise HTTPException(status_code=404, detail="会议不存在")
     return meeting
 
-
+#5.会议CRUD
 @app.get("/api/meetings/{meeting_id}")
 def get_meeting(meeting_id: str, db: DbSession = Depends(get_db)):
     return meeting_response(load_meeting(db, meeting_id))
@@ -279,23 +386,14 @@ def generate_minutes(
     db: DbSession = Depends(get_db),
 ):
     meeting = load_meeting(db, meeting_id)
-    chunks = [{"id": item.id, "text": item.text} for item in meeting.chunks]
     try:
-        result = get_model_client().generate_minutes(chunks)
-        validate_refs(result, {item["id"] for item in chunks})
-        parent = latest_version(db, meeting.id)
-        version = save_version(
-            db,
-            meeting_id=meeting.id,
-            kind="minutes",
-            payload=result.model_dump(mode="json"),
-            parent=parent,
-        )
+        state, version = MeetingMinutesWorkflow(get_model_client()).run(meeting, db)
         db.commit()
         return {
-            "result": result.model_dump(mode="json"),
+            "result": state.minutes.model_dump(mode="json") if state.minutes else None,
             "version_no": version.version_no,
             "result_version_id": version.id,
+            "needs_human_review": state.needs_human_review,
             "model_mode": "fake" if settings.use_fake_model else "deepseek",
         }
     except ModelError as exc:
@@ -307,6 +405,70 @@ def generate_minutes(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.post("/api/meetings/{meeting_id}/review")
+def review_minutes(
+    meeting_id: str,
+    payload: ReviewRequest,
+    db: DbSession = Depends(get_db),
+):
+    meeting = load_meeting(db, meeting_id)
+    current = latest_version(db, meeting_id)
+    if not current:
+        raise HTTPException(status_code=400, detail="请先生成会议纪要")
+    try:
+        updated = current.payload
+        changes = []
+        if payload.patches:
+            updated, changes, _ = apply_patches(updated, payload.patches)
+        if payload.confirm:
+            updated = confirm_review(updated)
+        version = save_version(
+            db,
+            meeting_id=meeting_id,
+            kind="minutes",
+            payload=updated,
+            parent=current,
+        )
+        session = meeting.sessions[0] if meeting.sessions else None
+        if session:
+            db.add(
+                Message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=f"人工确认已保存为版本 {version.version_no}。",
+                    result_version_id=version.id,
+                )
+            )
+        db.commit()
+        if updated.get("review_status") == "confirmed":
+            try:
+                indexed = get_retrieval_service().index_confirmed_meeting(meeting, version)
+                logger.info("meeting_id=%s rag_indexed=%d", meeting_id, indexed)
+            except Exception as exc:
+                # RAG/Supabase 是 sidecar；索引失败不能回滚已经确认的核心业务版本。
+                logger.warning("meeting_id=%s supabase_error rag_index=%s", meeting_id, exc)
+        return {
+            "result": updated,
+            "version_no": version.version_no,
+            "result_version_id": version.id,
+            "changes": changes,
+            "needs_human_review": updated.get("review_status") != "confirmed",
+        }
+    except (AmbiguousInstruction, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/knowledge/query")
+def query_knowledge(payload: KnowledgeQuery):
+    """Read-only historical meeting/SOP query; it never mutates meeting state."""
+    try:
+        return get_retrieval_service().query(payload)
+    except RetrievalError as exc:
+        logger.warning("retrieval_error=%s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+#6.会话与修订
 @app.post("/api/meetings/{meeting_id}/action-items/{item_id}")
 def toggle_action_item(
     meeting_id: str,
@@ -355,6 +517,40 @@ def toggle_action_item(
     except (AmbiguousInstruction, ValueError) as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/meetings/{meeting_id}/action-items/{item_id}/status")
+def update_action_status(
+    meeting_id: str,
+    item_id: str,
+    payload: ActionStatusRequest,
+    db: DbSession = Depends(get_db),
+):
+    meeting = load_meeting(db, meeting_id)
+    current = latest_version(db, meeting.id)
+    if not current:
+        raise HTTPException(status_code=400, detail="请先生成会议纪要")
+    try:
+        updated, changes, _ = apply_patches(
+            current.payload,
+            [FieldPatch(item_id=item_id, field="status", value=payload.status)],
+        )
+        version = save_version(
+            db, meeting_id=meeting.id, kind="minutes", payload=updated, parent=current
+        )
+        db.commit()
+        return {"result": updated, "version_no": version.version_no, "changes": changes}
+    except (AmbiguousInstruction, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/action-items/overview")
+def get_action_item_overview(db: DbSession = Depends(get_db)):
+    meetings = db.scalars(
+        select(Meeting).options(selectinload(Meeting.versions)).order_by(Meeting.created_at.desc())
+    ).all()
+    return action_item_overview(list(meetings))
 
 
 @app.post("/api/sessions/{session_id}/messages")
@@ -504,7 +700,7 @@ def list_versions(meeting_id: str, db: DbSession = Depends(get_db)):
         for item in versions
     ]
 
-
+#7.周报
 @app.post("/api/weekly-reports")
 def weekly_report(payload: WeeklyRequest, db: DbSession = Depends(get_db)):
     meetings = [load_meeting(db, meeting_id) for meeting_id in payload.meeting_ids]

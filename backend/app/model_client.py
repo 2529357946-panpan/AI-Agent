@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -8,8 +9,9 @@ import httpx
 #这个库跟requests库很像，但是对现代同步/异步HTTP支持更完整
 
 from .config import settings
-from .prompts import CHAT_PROMPT, MINUTES_PROMPT, SYSTEM_PROMPT
-from .schemas import ActionItem, ChatInterpretation, MinutesResult, ReferencedText
+from .cache import CacheClient, CacheError, get_cache_client, make_cache_key
+from .prompts import CHAT_PROMPT, KNOWLEDGE_PROMPT, MEETING_TYPE_GUIDANCE, MINUTES_PROMPT, SYSTEM_PROMPT
+from .schemas import ActionItem, ChatInterpretation, KnowledgeAnswer, MinutesResult, ReferencedText
 from .services import apply_revision, looks_like_question, looks_like_revision
 
 #模型调用统一异常：异常抽象，上层不需要管具体是什么异常
@@ -17,11 +19,17 @@ from .services import apply_revision, looks_like_question, looks_like_revision
 class ModelError(RuntimeError):
     pass
 
+
+class ModelValidationError(ModelError):
+    """The provider responded, but its structured business payload is invalid."""
+
 #模型客户端接口/抽象基类。类似java的interface
 #任何modelClient类都需要提供以下两个功能
 class ModelClient(ABC):
     @abstractmethod
-    def generate_minutes(self, chunks: list[dict]) -> MinutesResult: ...
+    def generate_minutes(
+        self, chunks: list[dict], meeting_type: str = "generic", validation_error: str | None = None
+    ) -> MinutesResult: ...
 
     @abstractmethod
     def interpret(
@@ -32,6 +40,9 @@ class ModelClient(ABC):
         history: list[dict[str, str]],
         previous_target: str | None,
     ) -> ChatInterpretation: ...
+
+    @abstractmethod
+    def answer_knowledge(self, query: str, sources: list[dict]) -> KnowledgeAnswer: ...
 
 #dpsk API的网络适配器
 class DeepSeekModelClient(ModelClient):
@@ -103,14 +114,21 @@ class DeepSeekModelClient(ModelClient):
                 raise ModelError("模型连续两次返回了非 JSON 内容") from exc
             return repaired
     #会议纪要
-    def generate_minutes(self, chunks: list[dict]) -> MinutesResult:
+    def generate_minutes(
+        self, chunks: list[dict], meeting_type: str = "generic", validation_error: str | None = None
+    ) -> MinutesResult:
         chunk_text = "\n".join(f"[{c['id']}] {c['text']}" for c in chunks)
+        guidance = MEETING_TYPE_GUIDANCE.get(meeting_type, MEETING_TYPE_GUIDANCE["generic"])
+        repair = f"\n上一次输出未通过校验：{validation_error}\n请修复后重新输出。" if validation_error else ""
         try:
             return MinutesResult.model_validate_json(
-                self._complete_json(MINUTES_PROMPT.format(chunks=chunk_text))
+                self._complete_json(
+                    MINUTES_PROMPT.format(chunks=chunk_text)
+                    + f"\n会议类型：{meeting_type}\n提取重点：{guidance}{repair}"
+                )
             )
         except ValueError as exc:
-            raise ModelError(f"模型返回不符合结构要求：{exc}") from exc
+            raise ModelValidationError(f"模型返回不符合结构要求：{exc}") from exc
 
     def interpret(
         self,
@@ -135,13 +153,24 @@ class DeepSeekModelClient(ModelClient):
         except ValueError as exc:
             raise ModelError(f"对话结果不符合结构要求：{exc}") from exc
 
+    def answer_knowledge(self, query: str, sources: list[dict]) -> KnowledgeAnswer:
+        source_text = "\n".join(f"[{item['source_id']}] {item['text']}" for item in sources)
+        try:
+            return KnowledgeAnswer.model_validate_json(
+                self._complete_json(KNOWLEDGE_PROMPT.format(query=query, sources=source_text))
+            )
+        except ValueError as exc:
+            raise ModelError(f"知识问答结果不符合结构要求：{exc}") from exc
+
 
 class FakeModelClient(ModelClient):
     """离线演示客户端。结果会由 API 明确标记为 fake，不冒充真实模型。"""
     #用确定性规则+正则化提取关键字，来完成模型理解的功能，在外部连接挂掉的情况下完成测试
     task_words = ("负责", "完成", "跟进", "整理", "提交", "准备", "更新")
 
-    def generate_minutes(self, chunks: list[dict]) -> MinutesResult:
+    def generate_minutes(
+        self, chunks: list[dict], meeting_type: str = "generic", validation_error: str | None = None
+    ) -> MinutesResult:
         sentences: list[tuple[str, str]] = []
         for chunk in chunks:
             for sentence in re.split(r"[\n。；;]+", chunk["text"]):
@@ -228,6 +257,91 @@ class FakeModelClient(ModelClient):
             answer="请补充要改哪一项待办、改负责人、截止日期还是状态；也可以直接询问会议内容。",
         )
 
+    def answer_knowledge(self, query: str, sources: list[dict]) -> KnowledgeAnswer:
+        if not sources:
+            return KnowledgeAnswer(answer="没有检索到可依据的已确认会议或演示资料。")
+        refs = [item["source_id"] for item in sources[:3]]
+        excerpts = "；".join(item["text"][:160] for item in sources[:3])
+        return KnowledgeAnswer(
+            answer=f"离线演示检索结果：{excerpts}", knowledge_refs=refs
+        )
+
+
+class CachedModelClient(ModelClient):
+    """Only caches idempotent generation calls; state-changing operations never pass here."""
+
+    prompt_version = "2026-10-meeting-v1"
+
+    def __init__(self, delegate: ModelClient, cache: CacheClient, model_name: str | None = None):
+        self.delegate = delegate
+        self.cache = cache
+        self.model_name = model_name or settings.model_name
+        self.last_cache_hit = False
+
+    def _read(self, key: str, schema):
+        try:
+            payload = self.cache.get(key)
+            if payload is None:
+                self.last_cache_hit = False
+                return None
+            result = schema.model_validate(payload)
+            self.last_cache_hit = True
+            return result
+        except (CacheError, ValueError) as exc:
+            self.last_cache_hit = False
+            logging.getLogger(__name__).warning("supabase_error cache_lookup=%s", exc)
+            return None
+
+    def _write(self, key: str, operation: str, result: MinutesResult | KnowledgeAnswer) -> None:
+        try:
+            self.cache.set(
+                key,
+                operation=operation,
+                model=self.model_name,
+                prompt_version=self.prompt_version,
+                result=result.model_dump(mode="json"),
+            )
+        except CacheError as exc:
+            logging.getLogger(__name__).warning("supabase_error cache_write=%s", exc)
+
+    def generate_minutes(
+        self, chunks: list[dict], meeting_type: str = "generic", validation_error: str | None = None
+    ) -> MinutesResult:
+        chunk_text = "\n".join(f"[{chunk['id']}] {chunk['text']}" for chunk in chunks)
+        guidance = MEETING_TYPE_GUIDANCE.get(meeting_type, MEETING_TYPE_GUIDANCE["generic"])
+        repair = f"\n上一次输出未通过校验：{validation_error}\n请修复后重新输出。" if validation_error else ""
+        full_prompt = MINUTES_PROMPT.format(chunks=chunk_text) + (
+            f"\n会议类型：{meeting_type}\n提取重点：{guidance}{repair}"
+        )
+        key = make_cache_key("generate_minutes", full_prompt, self.model_name, self.prompt_version)
+        cached = self._read(key, MinutesResult)
+        if cached is not None:
+            logging.getLogger(__name__).info("cache_hit operation=generate_minutes")
+            return cached
+        logging.getLogger(__name__).info("cache_miss operation=generate_minutes")
+        result = self.delegate.generate_minutes(chunks, meeting_type, validation_error)
+        self._write(key, "generate_minutes", result)
+        return result
+
+    def interpret(self, message, chunks, minutes, history, previous_target) -> ChatInterpretation:
+        return self.delegate.interpret(message, chunks, minutes, history, previous_target)
+
+    def answer_knowledge(self, query: str, sources: list[dict]) -> KnowledgeAnswer:
+        source_text = "\n".join(f"[{item['source_id']}] {item['text']}" for item in sources)
+        full_prompt = KNOWLEDGE_PROMPT.format(query=query, sources=source_text)
+        key = make_cache_key(
+            "rag_answer", full_prompt, self.model_name, self.prompt_version
+        )
+        cached = self._read(key, KnowledgeAnswer)
+        if cached is not None:
+            logging.getLogger(__name__).info("cache_hit operation=rag_answer")
+            return cached
+        logging.getLogger(__name__).info("cache_miss operation=rag_answer")
+        result = self.delegate.answer_knowledge(query, sources)
+        self._write(key, "rag_answer", result)
+        return result
+
 
 def get_model_client() -> ModelClient:
-    return FakeModelClient() if settings.use_fake_model else DeepSeekModelClient()
+    delegate = FakeModelClient() if settings.use_fake_model else DeepSeekModelClient()
+    return CachedModelClient(delegate, get_cache_client()) if settings.supabase_enabled else delegate

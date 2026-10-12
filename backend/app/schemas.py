@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 #字段只能从固定值选
 Status = Literal["unknown", "todo", "in_progress", "done"]
+MeetingType = Literal["teaching_research", "academic_operations", "branch_management", "generic"]
 
 #BaseModel就是默认结构化数据格式，直接继承就行
 #Field就是里面的校验规则
@@ -36,6 +37,8 @@ class MinutesResult(BaseModel):
     action_items: list[ActionItem] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
+    review_status: Literal["pending", "confirmed"] = "pending"
+    review_required_fields: list[str] = Field(default_factory=list)
 
 #B.周报结果结构
 class WeeklyResult(BaseModel):
@@ -43,6 +46,7 @@ class WeeklyResult(BaseModel):
     in_progress: list[str] = Field(default_factory=list)
     risks_and_pending: list[str] = Field(default_factory=list)
     next_week: list[str] = Field(default_factory=list)
+    overdue: list[str] = Field(default_factory=list)
     source_meeting_ids: list[str]
     notes: str | None = None
 
@@ -53,6 +57,9 @@ class MeetingCreate(BaseModel):
     text: str
     title: str | None = None
     meeting_date: date | None = None
+    branch_name: str | None = Field(default=None, max_length=120)
+    department: str | None = Field(default=None, max_length=120)
+    meeting_type: MeetingType = "generic"
 
     @field_validator("text") #字段级validation，专门检查text字段是否为空
     @classmethod
@@ -65,6 +72,10 @@ class MeetingCreate(BaseModel):
 #修改待办完成状态的请求包，前端的待办事项的复选框
 class ActionToggleRequest(BaseModel):
     done: bool
+
+
+class ActionStatusRequest(BaseModel):
+    status: Status
 
 #minutes是会议纪要的意思，目前只有这一种生成请求，后面可能扩展
 class GenerateRequest(BaseModel):
@@ -88,6 +99,11 @@ class FieldPatch(BaseModel):
     field: Literal["owner", "due_date", "status", "task"]
     value: str | None = None
 
+
+class ReviewRequest(BaseModel):
+    patches: list[FieldPatch] = Field(default_factory=list)
+    confirm: bool = True
+
 #模型对用户意图转译
 class ChatInterpretation(BaseModel):
     #理解意图：用户要修改/问询/意图不清、需要用户说明白
@@ -109,3 +125,30 @@ class WeeklyRequest(BaseModel):
         if self.period_end < self.period_start:
             raise ValueError("结束日期不能早于开始日期")
         return self
+
+
+class InputInspection(BaseModel):
+    valid: bool
+    contains_sensitive_info: bool = False
+    suspected_prompt_injection: bool = False
+    normalized_query: str
+    reason: str = ""
+
+
+class KnowledgeQuery(BaseModel):
+    query: str = Field(min_length=2, max_length=1000)
+    branch_name: str | None = None
+    department: str | None = None
+    meeting_type: MeetingType | None = None
+
+
+class KnowledgeSource(BaseModel):
+    source_id: str
+    text: str
+    score: float
+    metadata: dict = Field(default_factory=dict)
+
+
+class KnowledgeAnswer(BaseModel):
+    answer: str
+    knowledge_refs: list[str] = Field(default_factory=list)

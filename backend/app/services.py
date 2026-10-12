@@ -96,6 +96,38 @@ def validate_refs(result: MinutesResult, valid_refs: set[str]) -> None:
     if invalid:
         raise ValueError(f"模型返回了无效来源引用：{', '.join(sorted(invalid))}")
 
+
+def review_requirements(minutes: MinutesResult | dict[str, Any]) -> list[str]:
+    result = minutes if isinstance(minutes, MinutesResult) else MinutesResult.model_validate(minutes)
+    missing: list[str] = []
+    for item in result.action_items:
+        if item.owner == "待确认":
+            missing.append(f"{item.id}.owner")
+        if item.due_date is None:
+            missing.append(f"{item.id}.due_date")
+        if item.status == "unknown":
+            missing.append(f"{item.id}.status")
+    return missing
+
+
+def mark_pending_review(payload: dict[str, Any]) -> dict[str, Any]:
+    updated = copy.deepcopy(payload)
+    updated["review_status"] = "pending"
+    updated["review_required_fields"] = review_requirements(updated)
+    MinutesResult.model_validate(updated)
+    return updated
+
+
+def confirm_review(payload: dict[str, Any]) -> dict[str, Any]:
+    updated = copy.deepcopy(payload)
+    missing = review_requirements(updated)
+    if missing:
+        raise ValueError(f"仍有待确认字段：{', '.join(missing)}")
+    updated["review_status"] = "confirmed"
+    updated["review_required_fields"] = []
+    MinutesResult.model_validate(updated)
+    return updated
+
 #3.结果版本管理和数据库查询
 #3.1保存新版本
 def save_version(
@@ -280,7 +312,7 @@ def apply_patches(
         last_id = target["id"]
     if not changes:
         raise AmbiguousInstruction("修改后的值与当前值相同")
-    MinutesResult.model_validate(updated)
+    updated = mark_pending_review(updated)
     return updated, changes, last_id
 
 #规则式自然语言解析器，将用户的话转成FieldPatch，服务apply_patches
@@ -345,6 +377,13 @@ def draft_weekly(meetings: list[Meeting], notes: str | None = None) -> WeeklyRes
         for item in payload.get("action_items", []):
             label = f"{meeting.title}：{item['task']}"
             status = item.get("status", "unknown")
+            due_date = item.get("due_date")
+            if status != "done" and due_date:
+                try:
+                    if date.fromisoformat(str(due_date)) < date.today():
+                        result.overdue.append(label)
+                except ValueError:
+                    pass
             if status == "done":
                 result.completed.append(label)
             elif status == "in_progress":
@@ -354,3 +393,39 @@ def draft_weekly(meetings: list[Meeting], notes: str | None = None) -> WeeklyRes
             else:
                 result.risks_and_pending.append(label)
     return result
+
+
+def action_item_overview(meetings: list[Meeting]) -> dict[str, list[dict[str, Any]]]:
+    """Aggregate latest snapshots without introducing a second ActionItem source of truth.
+
+    Trade-off: this avoids migration and dual writes now, but large-scale querying should later
+    move ActionItem into its own table with ResultVersion links.
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "pending_confirmation": [],
+        "todo": [],
+        "in_progress": [],
+        "overdue": [],
+        "done": [],
+    }
+    today = date.today()
+    for meeting in meetings:
+        versions = [version for version in meeting.versions if version.kind == "minutes"]
+        if not versions:
+            continue
+        payload = max(versions, key=lambda version: version.version_no).payload
+        for item in payload.get("action_items", []):
+            record = {**item, "meeting_id": meeting.id, "meeting_title": meeting.title}
+            status = item.get("status", "unknown")
+            if item.get("owner") == "待确认" or not item.get("due_date") or status == "unknown":
+                buckets["pending_confirmation"].append(record)
+            if status in {"todo", "in_progress", "done"}:
+                buckets[status].append(record)
+            due_date = item.get("due_date")
+            if status != "done" and due_date:
+                try:
+                    if date.fromisoformat(str(due_date)) < today:
+                        buckets["overdue"].append(record)
+                except ValueError:
+                    continue
+    return buckets
