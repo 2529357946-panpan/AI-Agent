@@ -21,9 +21,12 @@ MEETING_TYPE_GUIDANCE = {
     "generic": "按通用会议结构提取明确决议、待办和待确认问题。",
 }
 
-KNOWLEDGE_PROMPT = """只根据下列历史会议或演示 SOP 回答问题。不得编造来源中没有的信息。
-输出 JSON：{{"answer":"...","knowledge_refs":["source-id"]}}。
-knowledge_refs 只能使用给定来源 ID。
+KNOWLEDGE_PROMPT = """只根据下列历史会议或演示 SOP 回答问题，不得使用常识补全或编造。
+先判断来源是否直接支持问题所需结论，再输出 JSON：
+{{"answer":"...","supported":true或false,"knowledge_refs":["source-id"]}}。
+有直接依据时 supported=true，knowledge_refs 只保留直接支持答案的最少来源 ID。
+没有直接依据时 supported=false，answer 固定为“现有知识库中没有足够依据回答该问题。”，knowledge_refs 必须为空。
+回答先给结论，最多三句话；不要复述问题、来源标题或无关背景。
 
 问题：{query}
 

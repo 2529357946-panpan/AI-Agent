@@ -45,14 +45,16 @@ class RankedDocument:
 
 
 def tokenize(text: str) -> list[str]:
-    """Lightweight Chinese tokenizer: ASCII words plus Chinese unigram/bigram tokens."""
+    """Lightweight tokenizer: ASCII words plus Chinese bigrams (single-char fallback)."""
     lowered = text.lower()
     ascii_words = re.findall(r"[a-z0-9_]+", lowered)
     chinese_runs = re.findall(r"[\u4e00-\u9fff]+", lowered)
     tokens = list(ascii_words)
     for run in chinese_runs:
-        tokens.extend(run)
-        tokens.extend(run[index : index + 2] for index in range(len(run) - 1))
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            tokens.extend(run[index : index + 2] for index in range(len(run) - 1))
     return tokens
 
 
@@ -246,6 +248,29 @@ class HybridRetrievalService:
         self.last_vector_query = ""
         self.demo_loaded = False
 
+    def _short_circuit_response(self, inspection, *, blocked: bool) -> dict:
+        return {
+            "answer": (
+                "检测到疑似提示词注入，已停止知识库检索。"
+                if blocked
+                else "现有知识库中没有足够依据回答该问题。"
+            ),
+            "supported": False,
+            "knowledge_refs": [],
+            "sources": [],
+            "retrieval": {
+                "keyword_count": 0,
+                "vector_count": 0,
+                "final_count": 0,
+                "returned_source_count": 0,
+            },
+            "inspection": inspection.model_dump(),
+            "intent": "blocked" if blocked else "knowledge_query",
+            "workflow": ["inspect_input", "blocked" if blocked else "no_evidence"],
+            "model_mode": "fake" if settings.use_fake_model else "deepseek",
+            "cache_hit": False,
+        }
+
     def load_demo_knowledge(self) -> None:
         if self.demo_loaded:
             return
@@ -277,6 +302,8 @@ class HybridRetrievalService:
             inspection = self.local_model.inspect_input(payload.query)
             if not inspection.valid:
                 raise RetrievalError("查询内容为空或无效")
+            if inspection.suspected_prompt_injection:
+                return self._short_circuit_response(inspection, blocked=True)
             normalized = inspection.normalized_query
             filters = {
                 key: value
@@ -290,15 +317,29 @@ class HybridRetrievalService:
             candidates = self.store.list(filters)
             self.last_keyword_query = normalized
             keyword_results = keyword_search(normalized, candidates, settings.rag_top_k * 2)
+            if keyword_results:
+                keyword_cutoff = max(
+                    settings.rag_min_keyword_score,
+                    keyword_results[0].score * settings.rag_keyword_relative_cutoff,
+                )
+                keyword_results = [
+                    item for item in keyword_results if item.score >= keyword_cutoff
+                ]
             hypothetical = self.local_model.generate_hypothetical(normalized)
             self.last_vector_query = hypothetical
             vector = self.embedding_client.embed(hypothetical)
             vector_results = self.store.vector_search(
                 vector, top_k=settings.rag_top_k * 2, filters=filters
             )
+            vector_results = [
+                item for item in vector_results
+                if item.score >= settings.rag_min_vector_score
+            ]
             final = rrf_fuse(
                 [keyword_results, vector_results], k=settings.rrf_k, top_k=settings.rag_top_k
             )
+            if not final:
+                return self._short_circuit_response(inspection, blocked=False)
             sources = [
                 KnowledgeSource(
                     source_id=item.document.source_id,
@@ -314,6 +355,11 @@ class HybridRetrievalService:
             valid_ids = {source.source_id for source in sources}
             if not set(answer.knowledge_refs).issubset(valid_ids):
                 raise RetrievalError("知识回答引用了未检索到的来源")
+            returned_sources = (
+                [source for source in sources if source.source_id in set(answer.knowledge_refs)]
+                if answer.supported
+                else []
+            )
             cache_hit = bool(getattr(self.answer_model, "last_cache_hit", False))
             logger.info(
                 "rag_keyword_count=%d rag_vector_count=%d rag_final_count=%d",
@@ -321,14 +367,26 @@ class HybridRetrievalService:
             )
             return {
                 "answer": answer.answer,
+                "supported": answer.supported,
                 "knowledge_refs": answer.knowledge_refs,
-                "sources": [source.model_dump() for source in sources],
+                "sources": [source.model_dump() for source in returned_sources],
                 "retrieval": {
                     "keyword_count": len(keyword_results),
                     "vector_count": len(vector_results),
                     "final_count": len(final),
+                    "returned_source_count": len(returned_sources),
                 },
                 "inspection": inspection.model_dump(),
+                "intent": "knowledge_query",
+                "workflow": [
+                    "inspect_input",
+                    "retrieve_keyword",
+                    "generate_hyde",
+                    "retrieve_vector",
+                    "fuse_rrf",
+                    "answer",
+                    "validate_output",
+                ],
                 "model_mode": "fake" if settings.use_fake_model else "deepseek",
                 "cache_hit": cache_hit,
             }

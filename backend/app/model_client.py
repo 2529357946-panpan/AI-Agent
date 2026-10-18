@@ -155,12 +155,18 @@ class DeepSeekModelClient(ModelClient):
 
     def answer_knowledge(self, query: str, sources: list[dict]) -> KnowledgeAnswer:
         source_text = "\n".join(f"[{item['source_id']}] {item['text']}" for item in sources)
+        prompt = KNOWLEDGE_PROMPT.format(query=query, sources=source_text)
         try:
-            return KnowledgeAnswer.model_validate_json(
-                self._complete_json(KNOWLEDGE_PROMPT.format(query=query, sources=source_text))
+            return KnowledgeAnswer.model_validate_json(self._complete_json(prompt))
+        except ValueError as first_error:
+            repair_prompt = (
+                f"{prompt}\n\n上一次输出未通过结构校验：{first_error}\n"
+                "请按原来源重新判断，只返回修复后的 JSON。不得增加来源中不存在的信息。"
             )
-        except ValueError as exc:
-            raise ModelError(f"知识问答结果不符合结构要求：{exc}") from exc
+            try:
+                return KnowledgeAnswer.model_validate_json(self._complete_json(repair_prompt))
+            except ValueError as second_error:
+                raise ModelError(f"知识问答结果连续两次不符合结构要求：{second_error}") from second_error
 
 
 class FakeModelClient(ModelClient):
@@ -259,18 +265,22 @@ class FakeModelClient(ModelClient):
 
     def answer_knowledge(self, query: str, sources: list[dict]) -> KnowledgeAnswer:
         if not sources:
-            return KnowledgeAnswer(answer="没有检索到可依据的已确认会议或演示资料。")
+            return KnowledgeAnswer(
+                answer="现有知识库中没有足够依据回答该问题。",
+                supported=False,
+                knowledge_refs=[],
+            )
         refs = [item["source_id"] for item in sources[:3]]
         excerpts = "；".join(item["text"][:160] for item in sources[:3])
         return KnowledgeAnswer(
-            answer=f"离线演示检索结果：{excerpts}", knowledge_refs=refs
+            answer=f"离线演示检索结果：{excerpts}", supported=True, knowledge_refs=refs
         )
 
 
 class CachedModelClient(ModelClient):
     """Only caches idempotent generation calls; state-changing operations never pass here."""
 
-    prompt_version = "2026-10-meeting-v1"
+    prompt_version = "2026-10-meeting-v2"
 
     def __init__(self, delegate: ModelClient, cache: CacheClient, model_name: str | None = None):
         self.delegate = delegate

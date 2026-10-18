@@ -104,7 +104,8 @@ class OllamaLocalModelClient(LocalModelClient):
 
     def generate_hypothetical(self, query: str) -> str:
         return self._generate(
-            "为向量检索生成一段简短的假设性相关文档。不要回答用户，只描述可能包含答案的历史会议或制度内容。\n"
+            "为向量检索生成不超过80个汉字的假设性相关文档。只扩展主题、流程字段和同义表达，"
+            "不要直接回答问题，不要猜测具体人名、机构、日期、密码、负责人或结论。\n"
             f"查询：{query}"
         )
 

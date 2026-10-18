@@ -31,11 +31,17 @@ START -> prepare_context -> generate -> validate
 ## RAG
 
 ```text
-original query -> lightweight BM25 -------------------+
-                                                       +-> RRF -> top-k -> answer + knowledge_refs
-query -> local inspection -> Ollama/Fake HyDE -> embed +
-                                           -> pgvector/in-memory vector search
+query -> local inspection / route -- injection --> blocked structured response
+                |
+                +-> original query -> BM25 + score cutoff --------+
+                |                                                  |
+                +-> constrained HyDE -> embed -> vector + cutoff --+-> RRF
+                                                                      -> answer
+                                                                      -> supported/schema/ref validation
+                                                                      -> cited sources only
 ```
+
+默认向量阈值为 `0.60`，BM25 使用中文 bigram，并同时采用绝对分数 `2.50` 与最高分 `20%` 的动态截断。这些参数来自当前 synthetic corpus 的小样本验收，只是可解释基线，不视为跨语料通用最优值。
 
 会议 `source_refs` 与 RAG `knowledge_refs` 是两个不同引用域。只有 `review_status=confirmed` 的会议会被幂等索引，稳定 ID 为 `meeting:{meeting_id}:chunk:{chunk_id}`。
 

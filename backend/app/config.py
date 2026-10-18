@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     rag_enabled: bool = True
     rag_top_k: int = 5
     rrf_k: int = 60
+    rag_min_vector_score: float = 0.60
+    rag_min_keyword_score: float = 2.50
+    rag_keyword_relative_cutoff: float = 0.20
     cache_ttl_seconds: int = 86_400
 
     #cross-origin resource sharing,跨源资源共享，允许这两个origin向后端请求信息

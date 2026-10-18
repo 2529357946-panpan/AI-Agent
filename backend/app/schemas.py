@@ -150,5 +150,21 @@ class KnowledgeSource(BaseModel):
 
 
 class KnowledgeAnswer(BaseModel):
-    answer: str
-    knowledge_refs: list[str] = Field(default_factory=list)
+    answer: str = Field(min_length=1, max_length=800)
+    supported: bool
+    knowledge_refs: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("knowledge_refs")
+    @classmethod
+    def refs_are_unique(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("knowledge_refs 不能重复")
+        return value
+
+    @model_validator(mode="after")
+    def refs_match_support(self):
+        if self.supported and not self.knowledge_refs:
+            raise ValueError("有依据的回答必须提供 knowledge_refs")
+        if not self.supported and self.knowledge_refs:
+            raise ValueError("无依据的回答不能提供 knowledge_refs")
+        return self

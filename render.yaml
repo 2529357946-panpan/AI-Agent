@@ -36,6 +36,12 @@ services:
         value: "5"
       - key: RRF_K
         value: "60"
+      - key: RAG_MIN_VECTOR_SCORE
+        value: "0.60"
+      - key: RAG_MIN_KEYWORD_SCORE
+        value: "2.50"
+      - key: RAG_KEYWORD_RELATIVE_CUTOFF
+        value: "0.20"
       - key: OLLAMA_ENABLED
         value: "false"
       - key: OLLAMA_BASE_URL

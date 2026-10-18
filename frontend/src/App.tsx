@@ -16,7 +16,7 @@ type Minutes = {
 }
 type ChatMessage = { id?: string; role: "user" | "assistant"; content: string }
 type KnowledgeSource = { source_id: string; text: string; score: number; metadata: Record<string, unknown> }
-type KnowledgeResponse = { answer: string; knowledge_refs: string[]; sources: KnowledgeSource[]; model_mode: string; cache_hit: boolean }
+type KnowledgeResponse = { answer: string; supported: boolean; knowledge_refs: string[]; sources: KnowledgeSource[]; model_mode: string; cache_hit: boolean; intent: "knowledge_query" | "blocked" }
 type Meeting = MeetingItem & {
   session_id: string
   source_type: string
@@ -137,7 +137,7 @@ function App() {
           body: JSON.stringify({ query, branch_name: null, department: null, meeting_type: null }),
         })
         setKnowledgeAnswer(result)
-        setNotice(result.cache_hit ? "历史知识回答命中缓存。" : "历史知识检索完成。")
+        setNotice(result.intent === "blocked" ? "疑似提示词注入，已阻止检索。" : result.cache_hit ? "历史知识回答命中缓存。" : result.supported ? "历史知识检索完成。" : "知识库没有足够依据。")
       } catch (error) { setNotice((error as Error).message) }
       finally { setLoading(false) }
       return

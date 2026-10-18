@@ -82,11 +82,14 @@ validate(second failure) -> validation_failed -> END，随后抛出 ModelError
 
 `POST /api/knowledge/query` 只读查询已确认历史会议和 synthetic SOP：
 
-1. FakeLocalModel/Ollama 做输入检查；结果只是 preprocessing/risk signal，不是安全边界。
-2. 原始规范化 Query 进入轻量 BM25 关键词路线。
-3. Ollama/Fake 生成 hypothetical document，经 embedding 进入 Supabase pgvector 或内存向量路线。
-4. 两路按稳定 source ID 使用 `Σ 1/(k+rank)` 做 RRF，默认 `k=60`，取 top 5。
-5. DeepSeek/Fake 根据检索上下文生成答案并返回 `knowledge_refs`。
+1. FakeLocalModel/Ollama 做输入检查和知识查询路由；提示注入在检索前阻断。
+2. 原始规范化 Query 进入轻量 BM25 关键词路线；中文使用 bigram，按绝对分数和相对最高分截断。
+3. Ollama/Fake 生成受约束的 hypothetical document，经 embedding 进入 Supabase pgvector 或内存向量路线；默认丢弃余弦相似度低于 `0.60` 的候选。
+4. 两路按稳定 source ID 使用 `Σ 1/(k+rank)` 做 RRF，默认 `k=60`，最多取 top 5。
+5. DeepSeek/Fake 输出 `supported`、简短答案和最少 `knowledge_refs`；无直接依据时必须拒答且引用为空。
+6. 后端校验引用属于本次召回结果，前端只展示答案实际引用的来源。
+
+实际工作流为：`用户提问 → 输入检查/意图路由 → BM25 + HyDE/vector → RRF → 答案整合 → Pydantic/引用校验 → 结构化输出`。响应中的 `intent`、`workflow`、`retrieval` 和 `supported` 可用于调试与评测。
 
 当前会议纪要永远只使用当前 Meeting 的 SourceChunk。RAG 不进入纪要主链，避免历史信息污染当前事实。会议 `source_refs` 和知识 `knowledge_refs` 不能混用。
 
